@@ -1,0 +1,91 @@
+# Capstone Manifest
+# This file is read by the evaluator to understand how to run and test your project.
+
+# One command to boot the entire system (database + server)
+run: |
+  docker compose up -d &&
+  sleep 3 &&
+  python scripts/seed.py &&
+  uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Command to seed demo data (run after database is up)
+seed: python scripts/seed.py
+
+# Optional test command (if you add tests)
+test: pytest tests/ -v
+
+# Base URL where the API will be available
+base_url: http://localhost:8000
+
+# Endpoints the evaluator will probe (acceptance tests from brief)
+endpoints:
+  # Probe 1: Idempotent metering
+  - method: POST
+    path: /api/v1/generate
+    description: "Simulated AI generation - meters tokens, checks quota, idempotent"
+    headers:
+      X-Tenant-ID: "1"
+      Content-Type: "application/json"
+    body:
+      prompt: "Test prompt"
+      max_tokens: 100
+      idempotency_key: "probe-1-key"
+    expected_status: 200
+
+  # Probe 2: Quota boundary (drive to limit, then exceed)
+  - method: GET
+    path: /api/v1/usage/quota/check
+    description: "Check quota for AI tokens"
+    query:
+      tenant_id: "1"
+      usage_type: "ai_tokens"
+      quantity: "1000"
+    expected_status: 200
+
+  # Probe 3: Stripe Checkout flow
+  - method: POST
+    path: /api/v1/billing/checkout
+    description: "Create Checkout session for Pro upgrade"
+    headers:
+      Content-Type: "application/json"
+    body:
+      tenant_id: 1
+      plan_name: "pro"
+    expected_status: 200
+
+  # Probe 4: Webhook signature verification
+  - method: POST
+    path: /api/v1/billing/webhooks/stripe
+    description: "Stripe webhook handler - verifies signature"
+    headers:
+      Content-Type: "application/json"
+      stripe-signature: "invalid-signature"
+    body: '{"type": "checkout.session.completed", "id": "evt_test", "data": {"object": {}}}'
+    expected_status: 400
+
+  # Probe 5: Usage rollup with pricing
+  - method: GET
+    path: /api/v1/usage/rollup
+    description: "Monthly usage rollup with cost calculation"
+    query:
+      tenant_id: "1"
+    expected_status: 200
+
+# Environment variables needed (from .env.example)
+env_vars:
+  - DATABASE_URL
+  - DATABASE_URL_SYNC
+  - STRIPE_SECRET_KEY
+  - STRIPE_PUBLISHABLE_KEY
+  - STRIPE_WEBHOOK_SECRET
+  - STRIPE_PRICE_ID_FREE
+  - STRIPE_PRICE_ID_PRO
+  - APP_ENV
+  - APP_HOST
+  - APP_PORT
+  - LOG_LEVEL
+  - PRICE_API_CALL_CENTS
+  - PRICE_INPUT_TOKEN_PER_MILLION_CENTS
+  - PRICE_CACHED_INPUT_TOKEN_PER_MILLION_CENTS
+  - PRICE_OUTPUT_TOKEN_PER_MILLION_CENTS
+  - PRICE_REASONING_TOKEN_PER_MILLION_CENTS
