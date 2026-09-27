@@ -14,6 +14,7 @@ from app.schemas import (
     GenerateRequest,
     GenerateResponse,
     TokenUsageSimulated,
+    TokenBreakdown,
     CheckoutSessionRequest,
     CheckoutSessionResponse,
     WebhookEventResponse,
@@ -62,6 +63,10 @@ async def record_usage(
         idempotency_key=result.usage_event.idempotency_key,
         is_duplicate=result.is_duplicate,
     )
+
+@router.get("/v1/models")
+async def list_models():
+    return {"object": "list", "data": []}
 
 
 @router.get("/quota/check", response_model=QuotaCheckResponse)
@@ -126,8 +131,11 @@ async def get_usage_rollup(
     
     If period_start/period_end not provided, uses current billing period from subscription.
     """
-    # Verify tenant exists
-    stmt = select(Tenant).where(Tenant.id == tenant_id)
+    # Verify tenant exists (eagerly load subscription to avoid MissingGreenlet)
+    from sqlalchemy.orm import selectinload
+    stmt = select(Tenant).where(Tenant.id == tenant_id).options(
+        selectinload(Tenant.subscription)
+    )
     result = await metering_service.session.execute(stmt)
     tenant = result.scalar_one_or_none()
     
@@ -192,13 +200,21 @@ async def generate(
 
     total_tokens = token_breakdown.total_tokens
 
+    # Convert to TokenBreakdown for the quota service
+    token_breakdown_for_service = TokenBreakdown(
+        input_tokens=fresh_input,
+        cached_input_tokens=cached_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
     # Check quota and record usage atomically
     quota_result, metering_result = await quota_service.check_and_record(
         tenant_id=tenant_id,
         usage_type=UsageType.AI_TOKENS,
         requested_quantity=total_tokens,
         idempotency_key=request.idempotency_key,
-        token_breakdown=token_breakdown,
+        token_breakdown=token_breakdown_for_service,
         metadata=f"generate:{request.prompt[:50]}",
     )
 
@@ -246,6 +262,7 @@ async def generate(
             retry_after_seconds=None,
             message=None,
         ),
+        is_duplicate=metering_result.is_duplicate,
     )
 
 

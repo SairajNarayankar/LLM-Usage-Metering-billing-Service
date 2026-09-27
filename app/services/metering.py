@@ -3,11 +3,10 @@ from dataclasses import dataclass
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from app.models import Tenant, UsageEvent, UsageType, Plan
+from app.models import Tenant, UsageEvent, UsageType, Plan, Subscription
 from app.schemas import UsageRecordRequest, UsageRecordResponse, TokenBreakdown
 from app.services.pricing import pricing_calculator, TokenCostBreakdown
 from app.db.database import db
-
 
 @dataclass
 class MeteringResult:
@@ -119,8 +118,12 @@ class MeteringService:
         period_end: str,
     ) -> dict:
         """Get monthly usage rollup for a tenant."""
-        # Get tenant's plan for limits
-        tenant_stmt = select(Tenant).where(Tenant.id == tenant_id)
+        # Get tenant's plan for limits (eagerly loaded to avoid MissingGreenlet)
+        from sqlalchemy.orm import selectinload
+        from datetime import datetime
+        tenant_stmt = select(Tenant).where(Tenant.id == tenant_id).options(
+            selectinload(Tenant.subscription).selectinload(Subscription.plan)
+        )
         tenant_result = await self.session.execute(tenant_stmt)
         tenant = tenant_result.scalar_one_or_none()
         
@@ -129,6 +132,10 @@ class MeteringService:
         
         plan = tenant.subscription.plan
 
+        # Parse ISO format strings to datetime objects
+        period_start_dt = datetime.fromisoformat(period_start.replace('Z', '+00:00'))
+        period_end_dt = datetime.fromisoformat(period_end.replace('Z', '+00:00'))
+
         # Query usage events for the period
         stmt = select(
             UsageEvent.usage_type,
@@ -136,8 +143,8 @@ class MeteringService:
             func.sum(UsageEvent.cost_cents).label("total_cost"),
         ).where(
             UsageEvent.tenant_id == tenant_id,
-            UsageEvent.created_at >= period_start,
-            UsageEvent.created_at < period_end,
+            UsageEvent.created_at >= period_start_dt,
+            UsageEvent.created_at < period_end_dt,
         ).group_by(UsageEvent.usage_type)
 
         result = await self.session.execute(stmt)

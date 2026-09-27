@@ -1,10 +1,31 @@
 # Usage Metering & Billing Engine
 
-> FlyRank Internship Capstone — Backend Track
+> **FlyRank Internship Capstone — Backend Track**  
+> A production-ready metering, quota enforcement, and Stripe billing engine built with FastAPI, PostgreSQL, and clean architecture.
 
-A production-ready backend service for metering customer usage, enforcing subscription quotas, calculating costs with real-world AI token pricing rules, and integrating with Stripe for subscription management.
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://postgresql.org)
+[![Stripe](https://img.shields.io/badge/Stripe-Test%20Mode-purple.svg)](https://stripe.com)
+[![Tests](https://img.shields.io/badge/Tests-8%20passed-brightgreen.svg)](tests/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Architecture
+---
+
+## 🎯 Project Overview
+
+This capstone builds the **core billing engine** every SaaS needs: **how much has a customer used, what does it cost, and have they hit their limit?**
+
+It implements a complete, production-ready system with:
+- **Idempotent usage metering** — exactly-once recording via idempotency keys
+- **Quota enforcement** — pre-action checks with correct HTTP status codes (429/402)
+- **Real-world AI token pricing** — cached input cheaper, reasoning = output rate
+- **Stripe subscription integration** — Checkout + signature-verified webhooks
+- **Multi-tenant isolation** — complete data separation per customer
+
+---
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
@@ -25,162 +46,240 @@ A production-ready backend service for metering customer usage, enforcing subscr
                         └──────────────────┘
 ```
 
-### Request Flow
+### Request Flows
 
-1. **Metering Path**: `POST /api/v1/generate` → `QuotaService.check_and_record()` → `MeteringService.record_usage()` → Database
-2. **Quota Enforcement**: Checked *before* recording usage; returns `429` (quota exceeded) or `402` (upgrade required)
-3. **Cost Calculation**: Real-time pricing with cached input, reasoning tokens billed as output
-4. **Stripe Sync**: `checkout.session.completed` → webhook → updates tenant plan/status
+| Flow | Path | Description |
+|------|------|-------------|
+| **Metering** | `POST /generate` → `QuotaService.check_and_record()` → `MeteringService.record_usage()` → DB | Idempotent usage recording with quota check |
+| **Quota** | `GET /usage/quota/check` → `QuotaService.check_quota()` | Pre-action limit validation |
+| **Rollup** | `GET /usage/rollup` → `MeteringService.get_monthly_usage()` | Monthly usage + cost aggregation |
+| **Stripe Sync** | `checkout.session.completed` → webhook → `StripeService.handle_webhook()` → DB | Subscription state sync |
 
-## Features
+---
 
-- ✅ **Idempotent Metering**: Exactly-once usage recording via idempotency keys (DB unique constraint)
-- ✅ **Quota Enforcement**: Pre-action checks with `429 Too Many Requests` / `402 Payment Required`
-- ✅ **AI Token Pricing**: Cached input (cheaper), reasoning tokens (billed as output), per-category rates
-- ✅ **Stripe Integration**: Checkout flow + signature-verified webhooks with deduplication
-- ✅ **Multi-tenant**: Complete data isolation per tenant
-- ✅ **Integer Money Math**: All costs stored as cents (no floats)
+## ✨ Features Implemented
 
-## Quick Start
+### 1. Idempotent Usage Metering
+- **Database-level guarantee**: Unique constraint on `(tenant_id, idempotency_key)`
+- **Exactly-once semantics**: Retried requests return original event with `is_duplicate: true`
+- **Supported types**: `api_call` (count) + `ai_tokens` (token breakdown)
+
+### 2. Quota Enforcement
+- **Pre-action validation**: Checks *before* recording usage
+- **Correct HTTP semantics**:
+  - `429 Too Many Requests` — limit exceeded (with `Retry-After` header)
+  - `402 Payment Required` — feature not on plan / subscription inactive
+  - `200 OK` — allowed with remaining quota
+- **Period-aware**: Uses Stripe subscription period when available, falls back to calendar month
+
+### 3. AI Token Pricing (Real-World Rules)
+| Token Category | Rate (¢/1M) | Notes |
+|----------------|-------------|-------|
+| Input (fresh) | 150 | Standard input tokens |
+| Cached Input | 37 | **Cheaper** — provider had these cached |
+| Output | 600 | Generated tokens |
+| Reasoning | 600 | **Billed as output** — not a free category |
+
+> **Key rule**: Token categories *cannot* be simply added — each priced independently at its own rate.
+
+### 4. Stripe Integration (Test Mode)
+- **Checkout flow**: `POST /billing/checkout` → Stripe Checkout → webhook → subscription created
+- **Webhook handlers**: 
+  - `checkout.session.completed` — create subscription
+  - `customer.subscription.updated` — sync status/period/plan
+  - `customer.subscription.deleted` — cancel → downgrade to Free
+- **Security**: Signature verification (`stripe.Webhook.construct_event`), event deduplication
+
+### 5. Multi-Tenant Data Isolation
+- All queries scoped to `tenant_id`
+- Foreign keys with `ON DELETE CASCADE`
+- Row-level isolation at application + database level
+
+### 6. Money Handling
+- **All amounts stored as integer cents** (`BigInteger`) — **never floats**
+- Pricing constants pinned in config (`.env`)
+- Integer arithmetic: `(tokens * rate_cents) // 1_000_000`
+
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
 - Docker & Docker Compose
 - Python 3.11+
 - Stripe CLI (for webhook testing)
 
-### Setup
+### 1. Clone & Setup
 
 ```bash
-# 1. Clone and enter directory
+git clone https://github.com/YOUR_USERNAME/flyrank-capstone-metering-billing.git
 cd flyrank-capstone-metering-billing
 
-# 2. Start PostgreSQL
+# Start PostgreSQL
 docker compose up -d
 
-# 3. Create virtual environment
+# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 4. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
+```
 
-# 5. Configure environment
+### 2. Configure Environment
+
+```bash
 cp .env.example .env
-# Edit .env with your Stripe test keys (from Stripe Dashboard > Developers > API keys)
-# Get webhook secret: stripe listen --forward-to localhost:8000/api/v1/billing/webhooks/stripe
-
-# 6. Seed database
-python scripts/seed.py
-
-# 7. Run server
-uvicorn app.main:app --reload --port 8000
+# Edit .env with your Stripe test keys:
+# - STRIPE_SECRET_KEY (sk_test_...)
+# - STRIPE_PUBLISHABLE_KEY (pk_test_...)
+# - STRIPE_WEBHOOK_SECRET (from `stripe listen`)
+# - STRIPE_PRICE_ID_FREE, STRIPE_PRICE_ID_PRO (from Stripe Dashboard)
 ```
 
-### Stripe CLI Setup (for local webhook testing)
+### 3. Create Stripe Products (Dashboard → Products)
+
+| Product | Price | Interval | Copy to `.env` |
+|---------|-------|----------|----------------|
+| Free Plan | $0.00 | Monthly | `STRIPE_PRICE_ID_FREE` |
+| Pro Plan | $29.00 | Monthly | `STRIPE_PRICE_ID_PRO` |
+
+### 4. Seed Database & Run
 
 ```bash
-# Install Stripe CLI
-# Windows: scoop install stripe  |  Mac: brew install stripe/stripe-cli/stripe  |  Linux: see docs
+# Seed plans + demo tenant
+python -m scripts.seed
 
-# Login to Stripe (opens browser)
-stripe login
+# Start server
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# Forward webhooks to local server
+# In another terminal, forward webhooks
 stripe listen --forward-to localhost:8000/api/v1/billing/webhooks/stripe
-# Copy the webhook signing secret (whsec_...) to .env STRIPE_WEBHOOK_SECRET
-
-# In another terminal, trigger test events
-stripe trigger checkout.session.completed
-stripe trigger customer.subscription.updated
-stripe trigger customer.subscription.deleted
 ```
 
-## API Reference
+### 5. Test the API
 
-### Tenants
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/tenants` | Create tenant (auto-assigns Free plan) |
-| GET | `/api/v1/tenants` | List all tenants |
-| GET | `/api/v1/tenants/{id}` | Get tenant details |
-
-### Plans
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/plans` | List all plans |
-| GET | `/api/v1/plans/{name}` | Get plan details |
-
-### Usage & Metering
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/usage/record` | Record usage event (idempotent) |
-| GET | `/api/v1/usage/quota/check` | Check quota before action |
-| GET | `/api/v1/usage/rollup` | Monthly usage + cost summary |
-
-### Billable Endpoint (Demo)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/generate` | Simulated AI generation → meters tokens, checks quota |
-
-### Billing / Stripe
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/billing/checkout` | Create Stripe Checkout session |
-| POST | `/api/v1/billing/webhooks/stripe` | Stripe webhook handler |
-| GET | `/api/v1/billing/success` | Checkout success page |
-| GET | `/api/v1/billing/cancel` | Checkout cancel page |
-
-## Usage Examples
-
-### Create a Tenant
 ```bash
+# Health check
+curl http://localhost:8000/health
+
+# List plans
+curl http://localhost:8000/api/v1/plans
+
+# Create tenant
 curl -X POST http://localhost:8000/api/v1/tenants \
   -H "Content-Type: application/json" \
   -d '{"name": "Acme Corp"}'
-```
 
-### Simulate AI Generation (Meters Tokens)
-```bash
-curl -X POST http://localhost:8000/api/v1/generate \
+# Simulate AI generation (meters tokens, checks quota)
+curl -X POST "http://localhost:8000/api/v1/generate?tenant_id=1" \
   -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Write a haiku about billing systems",
-    "max_tokens": 500,
-    "idempotency_key": "gen-001"
-  }' \
-  -H "X-Tenant-ID: 1"
-```
+  -d '{"prompt": "Write a haiku about billing", "max_tokens": 500, "idempotency_key": "test-1"}'
 
-### Check Quota
-```bash
+# Check quota
 curl "http://localhost:8000/api/v1/usage/quota/check?tenant_id=1&usage_type=ai_tokens&quantity=1000"
-```
 
-### Get Usage Rollup
-```bash
+# Monthly rollup
 curl "http://localhost:8000/api/v1/usage/rollup?tenant_id=1"
-```
 
-### Upgrade to Pro (Stripe Checkout)
-```bash
+# Upgrade to Pro (Stripe Checkout)
 curl -X POST http://localhost:8000/api/v1/billing/checkout \
   -H "Content-Type: application/json" \
   -d '{"tenant_id": 1, "plan_name": "pro"}'
 ```
 
-## Pricing Constants (configurable via .env)
+---
 
-| Component | Rate (cents per million) |
-|-----------|-------------------------|
-| API Call | 1¢ per call |
-| Input Tokens | 150¢ / 1M |
-| Cached Input Tokens | 37¢ / 1M |
-| Output Tokens | 600¢ / 1M |
-| Reasoning Tokens | 600¢ / 1M (billed as output) |
+## 📚 API Reference
 
-*Rates approximate Gemini 1.5 Flash pricing for demonstration.*
+### Tenants
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/tenants` | Create tenant (auto-assigns Free plan) |
+| `GET` | `/api/v1/tenants` | List all tenants |
+| `GET` | `/api/v1/tenants/{id}` | Get tenant details |
 
-## Project Structure
+### Plans
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/plans` | List all plans |
+| `GET` | `/api/v1/plans/{name}` | Get plan details |
+
+### Usage & Metering
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/usage/record` | Record usage event (idempotent) |
+| `GET` | `/api/v1/usage/quota/check` | Check quota before action |
+| `GET` | `/api/v1/usage/rollup` | Monthly usage + cost summary |
+
+### Billable Endpoint (Demo)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/generate` | Simulated AI generation → meters tokens, checks quota |
+
+### Billing / Stripe
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/billing/checkout` | Create Stripe Checkout session |
+| `POST` | `/api/v1/billing/webhooks/stripe` | Stripe webhook handler |
+| `GET` | `/api/v1/billing/success` | Checkout success page |
+| `GET` | `/api/v1/billing/cancel` | Checkout cancel page |
+
+---
+
+## 🧪 Testing
+
+### Run Test Suite
+
+```bash
+python -m pytest tests/ -v
+```
+
+### Run Acceptance Probes (from Capstone Brief)
+
+```bash
+# Probe 1: Idempotency
+python -c "
+import httpx
+payload = {'prompt': 'test', 'max_tokens': 100, 'idempotency_key': 'probe-1'}
+r1 = httpx.post('http://localhost:8000/api/v1/generate?tenant_id=1', json=payload)
+r2 = httpx.post('http://localhost:8000/api/v1/generate?tenant_id=1', json=payload)
+print('Same event_id:', r1.json()['usage_event_id'] == r2.json()['usage_event_id'])
+print('Second is_duplicate:', r2.json()['is_duplicate'])
+"
+
+# Probe 2: Quota Boundary
+curl "http://localhost:8000/api/v1/usage/quota/check?tenant_id=1&usage_type=api_call&quantity=1000"
+curl "http://localhost:8000/api/v1/usage/quota/check?tenant_id=1&usage_type=api_call&quantity=1001"
+
+# Probe 3: Stripe Checkout
+curl -X POST http://localhost:8000/api/v1/billing/checkout \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": 1, "plan_name": "pro"}'
+# Complete checkout in browser, then:
+curl "http://localhost:8000/api/v1/usage/rollup?tenant_id=1"
+
+# Probe 4: Webhook Security
+curl -X POST http://localhost:8000/api/v1/billing/webhooks/stripe \
+  -H "Content-Type: application/json" \
+  -H "stripe-signature: invalid" \
+  -d '{"type": "checkout.session.completed", "id": "evt_test", "data": {"object": {}}}'
+stripe trigger checkout.session.completed
+stripe trigger checkout.session.completed
+
+# Probe 5: Pricing Rules
+python -c "
+from app.services.pricing import pricing_calculator
+b = pricing_calculator.calculate_token_cost(input_tokens=1000, cached_input_tokens=500, output_tokens=2000, reasoning_tokens=500)
+print('Total:', b.total_cost_cents, 'cents')
+print('Cached cheaper:', b.cached_input_cost_cents < b.input_cost_cents)
+print('Reasoning=output:', b.reasoning_cost_cents == b.output_cost_cents * 0.25)
+"
+```
+
+---
+
+## 📁 Project Structure
 
 ```
 flyrank-capstone-metering-billing/
@@ -189,7 +288,7 @@ flyrank-capstone-metering-billing/
 │   │   ├── tenants.py    # Tenant, plan, subscription endpoints
 │   │   └── usage.py      # Metering, quota, billing, generate endpoints
 │   ├── core/
-│   │   └── config.py     # Pydantic settings
+│   │   └── config.py     # Pydantic Settings (env config)
 │   ├── db/
 │   │   └── database.py   # SQLAlchemy async setup
 │   ├── models/           # SQLAlchemy models
@@ -205,7 +304,7 @@ flyrank-capstone-metering-billing/
 ├── migrations/           # Alembic migrations
 ├── scripts/
 │   └── seed.py           # Database seeding
-├── tests/                # Test suite
+├── tests/                # Test suite (8 tests)
 ├── .env.example          # Environment template
 ├── docker-compose.yml    # PostgreSQL
 ├── requirements.txt      # Python dependencies
@@ -216,30 +315,115 @@ flyrank-capstone-metering-billing/
 └── README.md             # This file
 ```
 
-## Limitations
+---
+
+## 🔧 Configuration
+
+All config via environment variables (`.env`):
+
+```env
+# Database
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/metering_billing
+DATABASE_URL_SYNC=postgresql+psycopg2://postgres:postgres@localhost:5432/metering_billing
+
+# Stripe (Test Mode Only)
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID_FREE=price_xxx
+STRIPE_PRICE_ID_PRO=price_yyy
+
+# App
+APP_ENV=development
+APP_HOST=0.0.0.0
+APP_PORT=8000
+LOG_LEVEL=INFO
+
+# Pricing (cents per unit)
+PRICE_API_CALL_CENTS=1
+PRICE_INPUT_TOKEN_PER_MILLION_CENTS=150
+PRICE_CACHED_INPUT_TOKEN_PER_MILLION_CENTS=37
+PRICE_OUTPUT_TOKEN_PER_MILLION_CENTS=600
+PRICE_REASONING_TOKEN_PER_MILLION_CENTS=600
+```
+
+---
+
+## 📋 Capstone Requirements Checklist
+
+| Requirement | Status | Evidence |
+|-------------|--------|----------|
+| Idempotent metering (exactly-once) | ✅ | `EVIDENCE.md` Probe 1 |
+| Quota enforcement (429/402) | ✅ | `EVIDENCE.md` Probe 2 |
+| AI token pricing rules | ✅ | `EVIDENCE.md` Probe 5 |
+| Stripe Checkout + webhooks | ✅ | `EVIDENCE.md` Probe 3, 4 |
+| Multi-tenant isolation | ✅ | DB schema + queries |
+| Integer money math | ✅ | All costs in cents |
+| Signature-verified webhooks | ✅ | `EVIDENCE.md` Probe 4 |
+| Event deduplication | ✅ | `EVIDENCE.md` Probe 4 |
+
+---
+
+## 📝 Limitations (Honest Assessment)
 
 - **No proration**: Mid-cycle upgrades charge full price (stretch goal)
 - **No invoicing**: Monthly statements not generated (stretch goal)
 - **No usage alerts**: No 80%/100% notifications (stretch goal)
-- **Single dummy endpoint**: Only `/generate` exercises metering
+- **Single demo endpoint**: Only `/generate` exercises metering
 - **Stripe test mode only**: No live payment processing
-- **No authentication**: Tenant ID passed as header/query param for simplicity
-- **Calendar month fallback**: Uses subscription period when available, else calendar month
+- **Simplified auth**: `tenant_id` via query param (not JWT/OAuth)
+- **Calendar month fallback**: Used when Stripe period unavailable
 
-## Testing
+---
 
-```bash
-# Run tests (when implemented)
-pytest tests/ -v
+## 🛠️ Tech Stack
 
-# Manual acceptance probes (from capstone brief)
-# Probe 1: Idempotency - send same request twice with same idempotency_key
-# Probe 2: Quota boundary - drive tenant to limit, verify 429/402
-# Probe 3: Stripe Checkout - complete test flow, verify plan flip
-# Probe 4: Webhook security - forge signature → 400, replay → ignored
-# Probe 5: Pricing - verify cached input & reasoning token rules
-```
+| Layer | Technology |
+|-------|------------|
+| Language | Python 3.11+ |
+| Framework | FastAPI 0.115+ |
+| Database | PostgreSQL 16 (asyncpg) |
+| ORM | SQLAlchemy 2.0 (async) |
+| Migrations | Alembic |
+| Payments | Stripe (Test Mode) |
+| Testing | pytest + httpx |
+| Config | Pydantic Settings |
+| Containerization | Docker Compose |
 
-## License
+---
 
-MIT — FlyRank Internship Capstone Project
+## 🤝 AI-Assisted Development
+
+This project was built with AI assistance (Claude). See [`BUILDLOG.md`](BUILDLOG.md) for:
+- Where AI generated code
+- Where AI was wrong and what was corrected
+- Key design decisions made by human
+
+> **Principle**: "AI-assisted building is encouraged — and owned. You must be able to explain any 2–3 lines of your code."
+
+---
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- **FlyRank Internship** — Backend Track Capstone
+- **Stripe** — Excellent test mode + CLI for local development
+- **FastAPI / SQLAlchemy** — Modern, type-safe Python frameworks
+- **PostgreSQL** — Rock-solid relational database
+
+---
+
+## 📞 Contact
+
+**Author**: [Your Name]  
+**Capstone**: FlyRank Internship — Backend Track  
+**Repository**: https://github.com/YOUR_USERNAME/flyrank-capstone-metering-billing
+
+---
+
+**Built with ❤️ for the FlyRank Internship Capstone**

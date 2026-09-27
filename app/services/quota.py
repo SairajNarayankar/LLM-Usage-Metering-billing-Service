@@ -1,4 +1,7 @@
 """Quota enforcement service."""
+from __future__ import annotations
+from app.services.metering import MeteringResult
+from app.db.database import db
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from sqlalchemy import select, func, and_
@@ -51,8 +54,11 @@ class QuotaService:
         Returns:
             QuotaCheckResult with allowance decision and details
         """
-        # Get tenant with subscription and plan
-        stmt = select(Tenant).where(Tenant.id == tenant_id)
+        # Get tenant with subscription and plan (eagerly loaded to avoid MissingGreenlet)
+        from sqlalchemy.orm import selectinload
+        stmt = select(Tenant).where(Tenant.id == tenant_id).options(
+            selectinload(Tenant.subscription).selectinload(Subscription.plan)
+        )
         result = await self.session.execute(stmt)
         tenant = result.scalar_one_or_none()
         

@@ -13,9 +13,8 @@ class TestMeteringIdempotency:
         """Sending same request twice with same idempotency key creates one usage event."""
         # First request
         response1 = await client.post(
-            "/api/v1/generate",
+            "/api/v1/generate?tenant_id=1",
             json=sample_generate_request,
-            headers={"X-Tenant-ID": "1"},
         )
         assert response1.status_code == 200
         data1 = response1.json()
@@ -23,9 +22,8 @@ class TestMeteringIdempotency:
 
         # Second request with same idempotency key
         response2 = await client.post(
-            "/api/v1/generate",
+            "/api/v1/generate?tenant_id=1",
             json=sample_generate_request,
-            headers={"X-Tenant-ID": "1"},
         )
         assert response2.status_code == 200
         data2 = response2.json()

@@ -145,6 +145,10 @@ class TokenUsageSimulated(BaseModel):
     output_tokens: int
     reasoning_tokens: int
 
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.cached_input_tokens + self.output_tokens + self.reasoning_tokens
+
 
 class GenerateResponse(BaseModel):
     """Response from the dummy generate endpoint."""
@@ -153,3 +157,4 @@ class GenerateResponse(BaseModel):
     usage_event_id: int
     cost_cents: int
     quota_remaining: QuotaCheckResponse
+    is_duplicate: bool = False

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db_session
-from app.models import Tenant, Plan, Subscription, PlanType
+from app.models import Tenant, Plan, Subscription, PlanType, SubscriptionStatus
 from app.schemas import (
     TenantCreate,
     TenantResponse,
